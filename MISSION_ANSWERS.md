@@ -281,6 +281,50 @@ X-XSS-Protection: 1; mode=block
 
 ---
 
+## Part 3: Cloud Deployment
+
+### Exercise 3.1 / 3.2: Triển khai Agent Part 6 (`06-lab-complete/`) lên Cloud
+- **Platform:** Railway (`k5-day14-production-agent` — gồm 2 services: `agent` build từ `06-lab-complete/Dockerfile` và `Redis` liên kết qua `REDIS_URL=${{Redis.REDIS_URL}}`)
+- **Public URL:** https://agent-production-6fcdd40d.up.railway.app
+- **Kết quả chạy 4 lệnh tự kiểm tra tại CP6 (không lộ API key):**
+  ```text
+  $ BASE="https://agent-production-6fcdd40d.up.railway.app"
+  $ curl -sS -o /dev/null -w '%{http_code}\n' "$BASE/health"
+  200
+  $ curl -sS -o /dev/null -w '%{http_code}\n' "$BASE/ready"
+  200
+  $ curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$BASE/ask" -H 'Content-Type: application/json' -d '{"question":"Hello"}'
+  401
+  $ curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$BASE/ask" -H 'Content-Type: application/json' -H "X-API-Key: $AGENT_API_KEY" -d '{"question":"Hello"}'
+  200
+  ```
+- **Screenshots:**
+  - Dashboard: [screenshots/dashboard.png](screenshots/dashboard.png)
+  - Service running: [screenshots/running.png](screenshots/running.png)
+  - Self-test HTTP codes (`200` / `200` / `401` / `200`): [screenshots/test.png](screenshots/test.png)
+
+---
+
+### Exercise 3.2: So sánh `railway.toml` và `render.yaml` (Khác nhau ở đâu và vì sao?)
+
+| Khía cạnh | `railway.toml` (Railway) | `render.yaml` (Render Blueprint) | Vì sao có sự khác biệt này? |
+|---|---|---|---|
+| **Phạm vi khai báo** | Chỉ cấu hình cho **1 service đơn lẻ** (các tài nguyên phụ trợ như Redis được thêm riêng qua Railway Dashboard/CLI). | Là bản vẽ **Infrastructure as Code (IaC) đa dịch vụ**: khai báo chung cả Web Service (`type: web`), Redis (`type: redis`), ổ đĩa (`disk`), `region` và `plan` trong 1 file. | Railway tối ưu trải nghiệm đẩy nhanh từng service độc lập từ CLI/repo (`railway up`), còn Render hướng tới mô hình GitOps đồng bộ nguyên cụm hạ tầng qua một Blueprint duy nhất. |
+| **Quản lý Env Vars & Secrets** | **Không liệt kê biến môi trường trong file**; toàn bộ cấu hình và secret được đặt bên ngoài qua CLI (`railway variables set`) hoặc biến tham chiếu `${{Redis.REDIS_URL}}` trên Dashboard. | Khai báo tường minh danh sách `envVars` ngay trong YAML; biến nhạy cảm dùng `generateValue: true` (tự sinh khóa ngẫu nhiên như `AGENT_API_KEY`) hoặc `sync: false` (buộc điền tay trên Dashboard, không lưu giá trị thật vào Git). | Render muốn khóa chặt schema cấu hình ngay trong repo để tránh thiếu biến khi tái tạo môi trường mới mà vẫn không làm lộ secret; Railway tách hẳn cấu hình môi trường khỏi code để giữ file config tối giản. |
+| **Định dạng & Cơ chế Build/Deploy** | Định dạng **TOML** gọn nhẹ gồm 2 khối `[build]` (`builder = "DOCKERFILE"` / `"NIXPACKS"`) và `[deploy]` (`startCommand`, `healthcheckPath = "/health"`, `restartPolicyType = "ON_FAILURE"`). | Định dạng **YAML** phân cấp chi tiết (`runtime: docker` hoặc `python`, `buildCommand`, `startCommand`, `healthCheckPath: /health`, `autoDeploy: true`). | TOML phù hợp với cấu hình phẳng của một container đơn, trong khi cấu trúc cây của YAML phù hợp để mô tả quan hệ và thông số tài nguyên của nhiều dịch vụ. |
+
+---
+
+### Exercise 3.3: Mô tả Pipeline CI/CD trên GCP Cloud Run (`cloudbuild.yaml` & `service.yaml`)
+
+Khi có commit mới đẩy lên nhánh `main`, Google Cloud Build tự động thực thi pipeline 4 bước tuần tự (`waitFor`) trong `cloudbuild.yaml`:
+1. **`test` (`python:3.11-slim`):** Cài đặt `requirements.txt` + `pytest` và chạy bộ kiểm thử tự động `pytest tests/`; nếu test trượt, toàn bộ pipeline dừng ngay để chặn code lỗi.
+2. **`build` (`gcr.io/cloud-builders/docker`):** Build Docker image gắn đồng thời 2 tag (`:$COMMIT_SHA` để truy vết phiên bản và `:latest`), tận dụng `--cache-from` từ image `:latest` trước đó để tăng tốc layer cache.
+3. **`push` (`gcr.io/cloud-builders/docker`):** Đẩy toàn bộ các tag image vừa build lên Google Container Registry (`gcr.io/$PROJECT_ID/ai-agent`).
+4. **`deploy` (`gcr.io/cloud-builders/gcloud` + `service.yaml`):** Triển khai image `:$COMMIT_SHA` lên Cloud Run (`asia-southeast1`) với cấu hình production: giữ tối thiểu `minScale: 1` (tránh cold start), mở rộng tối đa `10` instances (`containerConcurrency: 80`), giới hạn `512Mi` RAM / `1` vCPU, tiêm khóa bảo mật trực tiếp từ **Secret Manager** (`secretKeyRef`), và giám sát bằng `startupProbe` (`/ready`) kết hợp `livenessProbe` (`/health`).
+
+---
+
 ## Part 4: API Security
 
 ### Exercise 4.1: API Key authentication (`04-api-gateway/develop/`)
@@ -663,3 +707,8 @@ Total messages: 10
 - **Hỏi AI:** Hỗ trợ hoàn thiện toàn bộ các chỗ `TODO` trong `06-lab-complete/` (`app/config.py`, `app/auth.py`, `app/redis_client.py`, `app/rate_limiter.py`, `app/cost_guard.py`, `app/main.py`, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`) theo đúng hợp đồng 12 tiêu chí của Part 6.
 - **Nhận từ AI:** Triển khai code đọc cấu hình 12-Factor, xác thực `X-API-Key` trả `401`, kết nối Redis lazy kèm `redis_healthy()`, rate limiter cửa sổ trượt bằng Redis Sorted Set (`429` + `Retry-After`), cost guard bằng `INCRBYFLOAT` (`402`), `JsonFormatter`, `lifespan` graceful shutdown, và multi-stage `Dockerfile` chạy non-root user với `exec uvicorn` ở PID 1.
 - **Tự sửa và tự kiểm tra:** Đã đối chiếu từng module, xác nhận `check_production_ready.py` hoàn toàn không bị chỉnh sửa (`git diff` trống), và chạy bản chấm đầy đủ `python check_production_ready.py` trong môi trường Linux POSIX kết nối Docker Engine 29.6.2 đạt **`PASS 12/12` (`43/43 checks passed`)** với image size `63 MB` và thời gian `docker stop` `0.9s` (exit code `0`).
+
+### Mục 6 — Thực hiện CP6 (Part 3: Cloud Deployment lên Railway)
+- **Hỏi AI:** Tiếp tục thực hiện CP6 (so sánh `railway.toml` với `render.yaml`, mô tả pipeline CI/CD Cloud Run, khởi tạo Redis + deploy `06-lab-complete/` lên Railway, tạo `DEPLOYMENT.md` và kiểm thử URL public).
+- **Nhận từ AI:** Bảng đối chiếu chi tiết `railway.toml` vs `render.yaml`, tóm tắt 4 bước CI/CD trong `cloudbuild.yaml` & `service.yaml`, kịch bản dùng Railway CLI khởi tạo dịch vụ `Redis` + `agent`, gắn biến tham chiếu `REDIS_URL=${{Redis.REDIS_URL}}` và biến mật `AGENT_API_KEY` ngoài Git.
+- **Tự sửa và tự kiểm tra:** Đã đăng nhập tài khoản Railway cá nhân, deploy thành công tại `https://agent-production-6fcdd40d.up.railway.app`, chạy trực tiếp 4 lệnh `curl` tự kiểm tra xác nhận `/health` → `200`, `/ready` → `200`, `/ask` không key → `401`, `/ask` có key → `200`, và kiểm tra không lộ khóa `AGENT_API_KEY` hay email trong bất kỳ file nào.
