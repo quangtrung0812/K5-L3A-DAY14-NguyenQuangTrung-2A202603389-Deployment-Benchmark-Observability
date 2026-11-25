@@ -1,0 +1,30 @@
+name: AI Agent Eval Quality Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  eval-quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies and run Golden Dataset Evaluation
+        working-directory: 06-lab-complete/benchmark-observability/develop
+        run: |
+          pip install -r requirements.txt
+          AGENT_VERSION=v2 MOCK_ERROR_RATE=0 PORT=8002 python app.py &
+          AGENT_PID=$!
+          sleep 3
+          python eval/run_eval.py \
+            --url http://localhost:8002 \
+            --min-accuracy 0.85 \
+            --baseline ../../../reports/eval_v2.json
+          kill $AGENT_PID || true

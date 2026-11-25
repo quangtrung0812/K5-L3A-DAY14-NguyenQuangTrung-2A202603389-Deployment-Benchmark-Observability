@@ -681,6 +681,30 @@ Total messages: 10
 
 ---
 
+## Part 7: Benchmark & Observability — Câu trả lời bài tập bổ trợ
+
+> Báo cáo số liệu chi tiết của Part 7 nằm tại [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md), dữ liệu thô tại `reports/` và `benchmark-results/`.
+
+### Exercise 7.1: Prometheus Metrics & Cardinality
+1. **Ví dụ cho từng loại metric trong `/metrics`:**
+   - **Counter** (chỉ tăng đơn điệu, dùng với `rate()`): `http_requests_total{method="POST",route="/ask",status="200"}`, `llm_tokens_total{model="mock-llm-small",type="input"}`, `llm_cost_usd_total{model="mock-llm-small"}`.
+   - **Gauge** (tăng/giảm tùy thời điểm): `agent_in_flight_requests`, `agent_info{model="mock-llm-small",version="v2"}`.
+   - **Histogram** (phân phối vào các `le` bucket kèm `_sum`, `_count`): `http_request_duration_seconds_bucket`, `llm_request_duration_seconds_bucket`, và metric mới thêm `agent_question_length_chars_bucket`.
+2. **Vì sao `observe_requests` dùng `route.path` (gán `unmatched` khi không khớp) thay vì `request.url.path`?**
+   - Trong Prometheus, mỗi tổ hợp nhãn (label) mới sẽ sinh ra **1 time series độc lập trong RAM**. Nếu dùng URL thô `request.url.path`, khi bot quét lỗ hổng gửi hàng chục nghìn đường dẫn ngẫu nhiên (`/wp-admin`, `/.env`, `/scan-9f8a1b`...), số lượng time series bùng nổ (**high-cardinality explosion**) khiến Prometheus cạn sạch bộ nhớ RAM (OOM) và làm treo truy vấn Grafana. Gom toàn bộ route lạ về một nhãn cố định `route="unmatched"` giữ tổng số series luôn hữu hạn và an toàn.
+
+### Exercise 7.3: Cách dùng Exit Code của `eval/run_eval.py` làm Quality Gate chặn Merge
+- Script `eval/run_eval.py` kiểm tra điều kiện `gate_ok = (report["accuracy"] >= args.min_accuracy) and (len(regressions) == 0)` và thoát với **`SystemExit(0)` khi đạt** hoặc **`SystemExit(1)` khi trượt** (độ chính xác tụt dưới ngưỡng hoặc làm hỏng bất kỳ câu nào mà phiên bản baseline trước đó đã trả lời đúng).
+- Trong GitHub Actions (đã khai báo tại [.github/workflows/eval.yml](.github/workflows/eval.yml)) kèm Branch Protection Rule trên nhánh `main`, khi Pull Request làm giảm chất lượng prompt/retrieval khiến `run_eval.py` trả exit code `1`, step CI lập tức bị đánh dấu đỏ (`failed`) và tự động khóa nút **Merge** cho đến khi lập trình viên khắc phục triệt để.
+
+### Exercise 7.4: Phân tích Dashboard Grafana khi chịu tải
+1. **Khoảng cách giữa `avg` (`~232.9 ms`) và `p95` (`~293.2 ms`) / `p99` (`~1.70 s`):** Cho thấy phân phối độ trễ bị lệch phải mạnh (long-tail latency) — đa số request hoàn thành quanh ~200 ms nhưng nhóm ~3% request chậm (~1.7 s) kéo vọt đuôi `p99`, trong khi `avg` làm phẳng và che khuất trải nghiệm tệ của nhóm người dùng này.
+2. **Panel "Requests/s theo instance":** Nginx chia tải **rất đều** theo thuật toán Round-Robin cho các replica đang chạy (ví dụ 2 replica nhận xấp xỉ `30.71 req/s` và `30.57 req/s`).
+3. **Vì sao `input tokens/s` (`~4,700 tok/s`) lớn hơn `output tokens/s` (`~2,452 tok/s`)?** Ở Agent `v2` (RAG), mỗi câu hỏi đều được ghép thêm `SYSTEM_PROMPT` cộng với đoạn văn bản tài liệu truy xuất từ `KNOWLEDGE_BASE` trước khi gửi vào LLM làm `input_tokens` (~90–110 tokens/lượt), trong khi câu trả lời tóm tắt đầu ra (`output_tokens`) ngắn gọn hơn (~40–55 tokens/lượt).
+4. **`curl http://localhost:8080/metrics` trả về gì và vì sao?** Trả về **`HTTP/1.1 404 Not Found`** từ Nginx vì `nginx.conf` chủ động chặn `location = /metrics { return 404; }`. Endpoint `/metrics` tiết lộ cấu trúc nội bộ, phiên bản model, lưu lượng và chi phí nên chỉ cho phép Prometheus thu thập trực tiếp qua mạng Docker nội bộ (`obs_net`), tuyệt đối không phơi ra Internet.
+
+---
+
 ## AI Log
 
 ### Mục 1 — Phân tích đề bài và thực hiện CP1 (Part 1: Localhost vs Production)
@@ -712,3 +736,8 @@ Total messages: 10
 - **Hỏi AI:** Tiếp tục thực hiện CP6 (so sánh `railway.toml` với `render.yaml`, mô tả pipeline CI/CD Cloud Run, khởi tạo Redis + deploy `06-lab-complete/` lên Railway, tạo `DEPLOYMENT.md` và kiểm thử URL public).
 - **Nhận từ AI:** Bảng đối chiếu chi tiết `railway.toml` vs `render.yaml`, tóm tắt 4 bước CI/CD trong `cloudbuild.yaml` & `service.yaml`, kịch bản dùng Railway CLI khởi tạo dịch vụ `Redis` + `agent`, gắn biến tham chiếu `REDIS_URL=${{Redis.REDIS_URL}}` và biến mật `AGENT_API_KEY` ngoài Git.
 - **Tự sửa và tự kiểm tra:** Đã đăng nhập tài khoản Railway cá nhân, deploy thành công tại `https://agent-production-6fcdd40d.up.railway.app`, chạy trực tiếp 4 lệnh `curl` tự kiểm tra xác nhận `/health` → `200`, `/ready` → `200`, `/ask` không key → `401`, `/ask` có key → `200`, và kiểm tra không lộ khóa `AGENT_API_KEY` hay email trong bất kỳ file nào.
+
+### Mục 7 — Thực hiện CP7 & CP8 (Part 7: Benchmark & Observability)
+- **Hỏi AI:** Hỗ trợ thực hiện trọn vẹn Part 7 (thêm Histogram `agent_question_length_chars`, chạy 7 kịch bản `load_test.py`, chạy 3 bài `run_eval.py` và bổ sung `KNOWLEDGE_BASE` đạt `23/23`, sửa biến `PYTHONUSERBASE` trong `production/Dockerfile`, chạy Locust headless `scale_1` & `scale_3`, truy vết Jaeger + đối chiếu log JSON, kích hoạt Prometheus alerts firing và tổng hợp `BENCHMARK_REPORT.md`).
+- **Nhận từ AI:** Code bổ sung Histogram trong `develop/app.py`, 2 mục kiến thức HPA & JWT cho `KNOWLEDGE_BASE` trong `mock_llm.py`, file CI `.github/workflows/eval.yml`, bản vá `ENV PYTHONUSERBASE=/home/agent/.local` cho `production/Dockerfile`, và kịch bản chạy đo kiểm thực tế.
+- **Tự sửa và tự kiểm tra:** Đã chạy thật toàn bộ 10 file JSON trong `reports/` (`eval_v2_fixed.json` đạt `100.0%` — `23/23` không regression, `golden_dataset.jsonl` giữ nguyên 100%) và 2 file CSV Locust trong `benchmark-results/`, xác nhận `promtool test rules` báo `SUCCESS`, chụp thực tế 4 ảnh Grafana / Jaeger slow trace / Jaeger error trace / Prometheus Alerts (cả 4/4 rules cùng `FIRING`), đối chiếu từng con số trong `BENCHMARK_REPORT.md` khớp chính xác 100% với file JSON/CSV và dọn sạch stack `k5-day14-observability`.
