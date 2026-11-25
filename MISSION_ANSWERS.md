@@ -601,6 +601,42 @@ Total messages: 10
 
 ---
 
+## Part 6: Final Project — Production-Ready AI Agent (`06-lab-complete/`)
+
+### Tóm tắt các hạng mục đã hoàn thiện
+- **`app/config.py` & `.env.example`:** Đọc tập trung toàn bộ cấu hình từ biến môi trường (`PORT`, `ENVIRONMENT`, `AGENT_API_KEY`, `REDIS_URL`, `RATE_LIMIT_PER_MINUTE`, `DAILY_BUDGET_USD` / `MONTHLY_BUDGET_USD`, `LOG_LEVEL`), không hardcode secret.
+- **`app/auth.py`:** Xác thực header `X-API-Key` bằng `APIKeyHeader(auto_error=False)` và `secrets.compare_digest` — cả thiếu và sai khóa đều trả `401 Unauthorized`.
+- **`app/redis_client.py`:** Khởi tạo connection pool `redis.from_url(..., socket_connect_timeout=1.5)` dạng lazy (không chặn startup khi chưa có Redis) và hàm `redis_healthy()` kiểm tra `ping()` cho `/ready`.
+- **`app/rate_limiter.py`:** Thuật toán Sliding Window 60 giây trên Redis Sorted Set (`ZREMRANGEBYSCORE` → `ZCARD` → `ZADD` + `EXPIRE`), vượt ngưỡng trả `429 Too Many Requests` kèm header `Retry-After` và bảo toàn trạng thái qua các lần restart/nhiều worker.
+- **`app/cost_guard.py`:** Cộng dồn chi phí token theo ngày vào Redis bằng `INCRBYFLOAT` (`cost:daily:YYYY-MM-DD`), chặn trước khi gọi LLM với mã `402 Payment Required` nếu chạm trần `DAILY_BUDGET_USD`.
+- **`app/main.py`:** Định dạng toàn bộ log ứng dụng bằng `JsonFormatter`, tách biệt Liveness (`GET /health` luôn trả `200`) và Readiness (`GET /ready` trả `503` khi mất Redis hoặc đang tắt), xử lý lỗi không lộ stack trace, và quản lý Graceful Shutdown qua `lifespan`.
+- **`Dockerfile`, `.dockerignore`, `docker-compose.yml`, `railway.toml`, `render.yaml`:** Multi-stage build với `python:3.11-slim` + `/opt/venv` (~`63 MB`), chạy dưới non-root `appuser`, có `HEALTHCHECK`, `uvicorn` chạy làm PID 1 (`exec uvicorn ... --port ${PORT:-8000} --workers 2`) tắt êm trong `0.9s` khi `docker stop`.
+
+### Output kiểm tra `python check_production_ready.py` (Bản đầy đủ — POSIX + Docker)
+
+```text
+================================================================
+  📋 Checklist Deliverable
+     ✅ Dockerfile (multi-stage, < 500 MB)
+     ✅ docker-compose.yml (agent + redis)
+     ✅ .dockerignore
+     ✅ Health check endpoint (GET /health)
+     ✅ Readiness endpoint (GET /ready)
+     ✅ API Key authentication
+     ✅ Rate limiting
+     ✅ Cost guard
+     ✅ Config từ environment variables
+     ✅ Structured logging
+     ✅ Graceful shutdown
+     ✅ Public URL ready (Railway / Render config)
+----------------------------------------------------------------
+  Result: 12/12 tiêu chí đạt · 43/43 checks passed
+  🎉 PASS 12/12 — PRODUCTION READY! Deploy nào!
+================================================================
+```
+
+---
+
 ## AI Log
 
 ### Mục 1 — Phân tích đề bài và thực hiện CP1 (Part 1: Localhost vs Production)
@@ -622,3 +658,8 @@ Total messages: 10
 - **Hỏi AI:** Tiếp tục thực hiện CP4 (kiểm thử `/health`, `/ready`, graceful shutdown ở bản `develop`, bật Docker Compose stack `--scale agent=3` với project `-p k5-day14-scaling`, chạy `test_stateless.py` và cập nhật `MISSION_ANSWERS.md`).
 - **Nhận từ AI:** Phân biệt chi tiết Liveness (`/health`) và Readiness (`/ready`), giải thích cơ chế `lifespan` + `SIGTERM`, lý do lưu state trong RAM gây lỗi khi scale ngang, cùng kịch bản chạy và dọn dẹp stack `k5-day14-scaling`.
 - **Tự sửa và tự kiểm tra:** Đã khởi chạy thực tế 3 container `agent` + `redis` + `nginx` trên cổng `8080`, chạy `python test_stateless.py` xác nhận cả 3 instance (`instance-cae5aa`, `instance-8b37fa`, `instance-49bfa6`) cùng xử lý một session mà vẫn giữ nguyên đủ 10 messages trong Redis, thử dừng 1 instance kiểm chứng graceful shutdown & failover của Nginx, sau đó chạy `docker compose -p k5-day14-scaling down -v` và kiểm tra `.env.local` không bị Git theo dõi.
+
+### Mục 5 — Thực hiện CP5 (Part 6: Final Project — `06-lab-complete/`)
+- **Hỏi AI:** Hỗ trợ hoàn thiện toàn bộ các chỗ `TODO` trong `06-lab-complete/` (`app/config.py`, `app/auth.py`, `app/redis_client.py`, `app/rate_limiter.py`, `app/cost_guard.py`, `app/main.py`, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`) theo đúng hợp đồng 12 tiêu chí của Part 6.
+- **Nhận từ AI:** Triển khai code đọc cấu hình 12-Factor, xác thực `X-API-Key` trả `401`, kết nối Redis lazy kèm `redis_healthy()`, rate limiter cửa sổ trượt bằng Redis Sorted Set (`429` + `Retry-After`), cost guard bằng `INCRBYFLOAT` (`402`), `JsonFormatter`, `lifespan` graceful shutdown, và multi-stage `Dockerfile` chạy non-root user với `exec uvicorn` ở PID 1.
+- **Tự sửa và tự kiểm tra:** Đã đối chiếu từng module, xác nhận `check_production_ready.py` hoàn toàn không bị chỉnh sửa (`git diff` trống), và chạy bản chấm đầy đủ `python check_production_ready.py` trong môi trường Linux POSIX kết nối Docker Engine 29.6.2 đạt **`PASS 12/12` (`43/43 checks passed`)** với image size `63 MB` và thời gian `docker stop` `0.9s` (exit code `0`).
